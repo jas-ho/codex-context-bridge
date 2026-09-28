@@ -16,4 +16,4 @@ trusted_roots = ["~/Projects", "~/Code"]
 # include_dot_claude = true  # <project>/.claude/CLAUDE.md
 # include_rules = true       # <project>/.claude/rules/**/*.md
 # include_memory = true      # Claude auto-memory index (MEMORY.md)
-# max_context_chars = 18000  # stays under Codex's ~5,000-token hook context limit
+# max_context_chars = 18000  # fits additionalContextLimit = 5000 in examples/hooks.json

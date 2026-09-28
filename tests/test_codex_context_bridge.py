@@ -282,6 +282,44 @@ class RenderTests(BridgeTestCase):
         self.assertNotIn("SHALLOW", context)
         self.assertIn(f"Omitted over context cap: {self.work / 'CLAUDE.md'}", context)
 
+    def test_scoped_rule_list_is_budgeted(self) -> None:
+        (self.work / ".git").mkdir()
+        rules = self.work / ".claude" / "rules"
+        for index in range(400):
+            self.write(rules / f"rule{index:03d}.md", f"---\npaths: src/{index}/**/*.py\n---\nX")
+
+        context = self.render(self.work, max_context_chars=6000)
+
+        self.assertLessEqual(len(context), 6000)
+        self.assertIn("more scoped rules omitted over context cap", context)
+
+    def test_oversized_deep_file_does_not_drop_smaller_ancestors(self) -> None:
+        self.write(self.work / "CLAUDE.md", "SHALLOW_SMALL")
+        leaf = self.work / "leaf"
+        self.write(leaf / "CLAUDE.md", "DEEP_HUGE" + "y" * 10_000)
+
+        context = self.render(leaf, codex_fallback_filenames=(), max_context_chars=5000)
+
+        self.assertIn("SHALLOW_SMALL", context)
+        self.assertNotIn("DEEP_HUGE", context)
+        self.assertIn(f"Omitted over context cap: {leaf / 'CLAUDE.md'}", context)
+
+    def test_dot_claude_files_are_labelled_with_the_project_they_govern(self) -> None:
+        (self.work / ".git").mkdir()
+        instruction = self.write(self.work / ".claude" / "CLAUDE.md", "hidden")
+        rule = self.write(self.work / ".claude" / "rules" / "style.md", "ALWAYS_RULE")
+
+        context = self.render(self.work)
+
+        self.assertIn(f"## Source: {instruction} (applies to {self.work})", context)
+        self.assertIn(f"## Source: {rule} (applies to {self.work})", context)
+
+    def test_output_never_exceeds_cap(self) -> None:
+        self.write(self.work / "CLAUDE.md", "x")
+        self.assertLessEqual(
+            len(self.render(self.work, codex_fallback_filenames=(), max_context_chars=50)), 50
+        )
+
 
 class MemoryTests(BridgeTestCase):
     def test_flatten_matches_claude_code(self) -> None:
@@ -449,6 +487,58 @@ class ConfigAndCliTests(BridgeTestCase):
         payload = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(payload["hookEventName"], "SessionStart")
         self.assertIn("PARENT_VALUE", payload["additionalContext"])
+
+    def load_with(self, config_text: str) -> "bridge.Config":
+        env = self.env(config_text)
+        old = dict(os.environ)
+        try:
+            os.environ.update(env)
+            return bridge.load_config()
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_invalid_config_types_are_rejected(self) -> None:
+        bad = [
+            'trusted_roots = "~/Code"\n',
+            "trusted_roots = [1]\n",
+            'include_memory = "false"\n',
+            'max_context_chars = "oops"\n',
+            "max_context_chars = 0\n",
+            "max_context_chars = true\n",
+            'codex_root_markers = ".git"\n',
+            "claude_config_dir = 3\n",
+        ]
+        for text in bad:
+            with self.subTest(text=text), self.assertRaises(bridge.ConfigError):
+                self.load_with(text)
+
+    def test_hook_mode_injects_nothing_on_invalid_config(self) -> None:
+        self.write(self.work / "CLAUDE.md", "PARENT_VALUE")
+        env = self.env('trusted_roots = "/"\n')
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            input=json.dumps({"cwd": str(self.work)}),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("invalid config", result.stderr)
+
+    def test_hook_mode_exits_zero_on_unexpected_error(self) -> None:
+        env = self.env(f'trusted_roots = ["{self.work}"]\n')
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            input=json.dumps({"cwd": "bad\u0000path"}),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_hook_mode_is_silent_on_bad_input(self) -> None:
         env = self.env("")

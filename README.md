@@ -19,7 +19,7 @@ Codex reads instruction files from its project root (the nearest `.git` by defau
 | `.claude/rules` files with `paths:` frontmatter | no | listed with their patterns, not loaded |
 | Claude auto-memory index (`~/.claude/projects/<flattened-path>/memory/MEMORY.md`, nearest ancestor) | no | appended as background; linked memory files are not read |
 
-Output order is broad to deep, with a preamble telling Codex that native instructions win, deeper directories override shallower ones, and `CLAUDE.local.md` overrides `CLAUDE.md` in the same directory.
+Output order is broad to deep, with a preamble telling Codex that native instructions win, deeper directories override shallower ones, and `CLAUDE.local.md` overrides `CLAUDE.md` in the same directory. Each file's header names the directory it applies to; files under `.claude/` apply to the project that contains them.
 
 ## Install
 
@@ -30,7 +30,7 @@ Requires Python 3.11+ (stdlib only) and a Codex version with hooks.
    ```toml
    trusted_roots = ["~/Projects", "~/Code"]
    ```
-3. Add the hook to `~/.codex/hooks.json` (see [examples/hooks.json](examples/hooks.json)), then start Codex and approve the hook under `/hooks`.
+3. Add the hook to `~/.codex/hooks.json` (see [examples/hooks.json](examples/hooks.json)), keeping `additionalContextLimit` so the context is not cut to Codex's default, then start Codex and approve the hook under `/hooks`.
 4. Check what it would inject for a directory:
    ```sh
    codex-context-bridge --dry-run --cwd ~/Code/some-repo           # decisions as JSON
@@ -48,7 +48,7 @@ Config file: `$CODEX_CONTEXT_BRIDGE_CONFIG`, else `$XDG_CONFIG_HOME/codex-contex
 | `codex_fallback_filenames` | Codex's `project_doc_fallback_filenames` | Names Codex already reads; the hook does not re-inject them. |
 | `codex_root_markers` | Codex's `project_root_markers`, else `[".git"]` | How the hook finds Codex's project root. |
 | `include_local`, `include_dot_claude`, `include_rules`, `include_memory` | `true` | Toggle each source. |
-| `max_context_chars` | `18000` | Total budget, kept below Codex's roughly 5,000-token hook context limit. |
+| `max_context_chars` | `18000` | Total budget in characters. Sized to fit the hook's `additionalContextLimit` of 5000 set in [examples/hooks.json](examples/hooks.json); Codex's default limit may be lower, so set that key or lower this value. Must be a positive integer. |
 
 Codex settings are read from `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), so the hook mirrors what your Codex actually loads.
 
@@ -59,9 +59,9 @@ Codex settings are read from `$CODEX_HOME/config.toml` (default `~/.codex/config
 3. Finds Codex's project root, then walks from the trusted root to cwd. Above the project root it injects every `CLAUDE.md`; from the root down it injects `CLAUDE.md` only where Codex loaded no file for that directory.
 4. At the project root it adds `.claude/CLAUDE.md` and `.claude/rules`; at every level it adds `CLAUDE.local.md`.
 5. Every file must resolve inside the trusted root (memory: inside the Claude projects dir). Symlinks that escape are skipped and reported in `--dry-run`.
-6. When over budget it keeps whole files, deepest first, names the omitted ones, and truncates the memory index last.
+6. When over budget it keeps whole files, deepest first, skips any file that does not fit (smaller shallower files can still get in), names the omitted ones, caps the path-scoped rule list, and truncates the memory index last.
 
-Every failure exits 0 with a message on stderr, so a broken config never blocks a Codex session.
+Every failure exits 0 with a message on stderr, so a broken config never blocks a Codex session. Config values are type-checked (`trusted_roots` must be a list of strings, `include_*` must be booleans); an invalid config injects nothing. `--dry-run` reports an invalid config and exits 2.
 
 ## Limits
 
@@ -70,7 +70,7 @@ Every failure exits 0 with a message on stderr, so a broken config never blocks 
 - If a directory has both `AGENTS.md` and a `CLAUDE.md` with different content, only `AGENTS.md` reaches Codex. The hook assumes they mirror each other (the common symlink setup).
 - User-level context (`~/.claude/CLAUDE.md`, `~/.claude/rules/`) is not bridged. Point `~/.codex/AGENTS.md` at it, or generate it, instead.
 - `@path` imports inside `CLAUDE.md` are passed through as text, not expanded.
-- Hook context is a separate message, not a native instruction file, and counts against Codex's hook context limit, not `project_doc_max_bytes`.
+- Hook context is a separate message, not a native instruction file, and counts against the hook's `additionalContextLimit`, not `project_doc_max_bytes`.
 - Tested on macOS; should work on Linux. Not tested on Windows.
 
 ## Related tools

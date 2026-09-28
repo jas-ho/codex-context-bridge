@@ -49,7 +49,7 @@ class Config:
     include_dot_claude: bool = True
     include_rules: bool = True
     include_memory: bool = True
-    # Kept below Codex's approximate 5,000-token hook context limit.
+    # Sized to fit additionalContextLimit = 5000 (see examples/hooks.json).
     max_context_chars: int = 18_000
 
     @property
@@ -88,23 +88,54 @@ def codex_settings() -> dict:
     return read_toml(home / "config.toml")
 
 
+class ConfigError(ValueError):
+    """Invalid configuration; the hook then injects nothing."""
+
+
+def _str_list(value: object, key: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigError(f"{key} must be a list of strings, got {value!r}")
+    return tuple(value)
+
+
+def _bool(value: object, key: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be true or false, got {value!r}")
+    return value
+
+
 def load_config(path: Path | None = None) -> Config:
+    """Read and validate the config. Raises ConfigError on wrong types."""
     data = read_toml(path or default_config_path())
     codex = codex_settings()
-    claude_dir = data.get("claude_config_dir") or os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
-    fallback = data.get("codex_fallback_filenames", codex.get("project_doc_fallback_filenames", []))
-    markers = data.get("codex_root_markers", codex.get("project_root_markers", [".git"]))
     defaults = Config()
+    claude_dir = data.get("claude_config_dir") or os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
+    if not isinstance(claude_dir, str):
+        raise ConfigError(f"claude_config_dir must be a string, got {claude_dir!r}")
+    fallback = _str_list(
+        data.get("codex_fallback_filenames", codex.get("project_doc_fallback_filenames", [])),
+        "codex_fallback_filenames",
+    )
+    markers = _str_list(
+        data.get("codex_root_markers", codex.get("project_root_markers", [".git"])),
+        "codex_root_markers",
+    )
+    roots = _str_list(data.get("trusted_roots", []), "trusted_roots")
+    max_chars = data.get("max_context_chars", defaults.max_context_chars)
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
+        raise ConfigError(f"max_context_chars must be a positive integer, got {max_chars!r}")
     return Config(
-        trusted_roots=tuple(Path(p).expanduser() for p in data.get("trusted_roots", [])),
+        trusted_roots=tuple(Path(p).expanduser() for p in roots),
         claude_config_dir=Path(claude_dir).expanduser(),
-        codex_fallback_filenames=tuple(fallback),
-        codex_root_markers=tuple(markers),
-        include_local=bool(data.get("include_local", defaults.include_local)),
-        include_dot_claude=bool(data.get("include_dot_claude", defaults.include_dot_claude)),
-        include_rules=bool(data.get("include_rules", defaults.include_rules)),
-        include_memory=bool(data.get("include_memory", defaults.include_memory)),
-        max_context_chars=int(data.get("max_context_chars", defaults.max_context_chars)),
+        codex_fallback_filenames=fallback,
+        codex_root_markers=markers,
+        include_local=_bool(data.get("include_local", defaults.include_local), "include_local"),
+        include_dot_claude=_bool(
+            data.get("include_dot_claude", defaults.include_dot_claude), "include_dot_claude"
+        ),
+        include_rules=_bool(data.get("include_rules", defaults.include_rules), "include_rules"),
+        include_memory=_bool(data.get("include_memory", defaults.include_memory), "include_memory"),
+        max_context_chars=max_chars,
     )
 
 
@@ -390,29 +421,50 @@ def diagnostic(scan_result: Scan) -> dict[str, object]:
 # --------------------------------------------------------------------------
 
 
-def render_scoped_rules(scan_result: Scan) -> str:
+def applies_to(source: Path) -> Path:
+    """The directory a context file governs: files under .claude/ govern the project."""
+    for parent in source.parents:
+        if parent.name == ".claude":
+            return parent.parent
+    return source.parent
+
+
+def render_scoped_rules(scan_result: Scan, budget: int) -> str:
+    """The path-scoped rule pointer list, cut to fit the budget."""
     if not scan_result.scoped_rules:
         return ""
-    lines = [
+    head = (
         "\n\n## Path-scoped rules (not loaded)\n\n"
         "Read the matching rule file before editing files that match its pattern.\n"
-    ]
-    for path, paths in scan_result.scoped_rules:
-        lines.append(f"- {path} (paths: {paths})\n")
-    return "".join(lines)
+    )
+    lines = [f"- {path} (paths: {paths})\n" for path, paths in scan_result.scoped_rules]
+    out = head
+    for index, line in enumerate(lines):
+        remaining = len(lines) - index
+        more = f"- ... {remaining} more scoped rules omitted over context cap\n"
+        needs_note = index < len(lines) - 1
+        if len(out) + len(line) + (len(more) if needs_note else 0) > budget:
+            out += more
+            break
+        out += line
+    return out if len(out) <= budget else ""
 
 
 def render_instructions(scan_result: Scan, max_chars: int) -> str:
-    scoped = render_scoped_rules(scan_result)
-    if not scan_result.injected and not scoped:
+    if not scan_result.injected and not scan_result.scoped_rules:
         return ""
     preamble = (
         "# Trusted startup context bridge\n\n"
         "The files below are Claude-compatible instructions missing from Codex's "
         "native startup discovery. Native Codex instructions remain authoritative "
         "over hook-supplied context. Deeper directories override shallower ones; "
-        "within one directory, CLAUDE.local.md overrides CLAUDE.md. Apply these "
-        "instructions only within their directory subtree.\n"
+        "within one directory, CLAUDE.local.md overrides CLAUDE.md. Apply each file "
+        "only within the directory subtree named in its 'applies to' label (files "
+        "under .claude/ apply to the project that contains that .claude/ directory).\n"
+    )
+    # Path-scoped pointers get at most a quarter of what the files could use.
+    scoped = render_scoped_rules(
+        scan_result, max(0, (max_chars - len(preamble) - OMITTED_NOTE_RESERVE) // 4)
     )
 
     sections: list[tuple[Path, str]] = []
@@ -422,26 +474,31 @@ def render_instructions(scan_result: Scan, max_chars: int) -> str:
         except (OSError, UnicodeError) as exc:
             print(f"{PROG}: cannot read {item.source}: {exc}", file=sys.stderr)
 
-    chosen: list[str] = []
+    chosen: list[tuple[int, str]] = []
     used = len(preamble) + len(scoped)
     omitted: list[Path] = []
-    # Preserve complete files and favor the deepest context under the cap.
+    # Preserve complete files and favor the deepest context under the cap; a file
+    # that does not fit is skipped and smaller shallower files still get a chance.
     for index in range(len(sections) - 1, -1, -1):
         path, content = sections[index]
-        rendered = f"\n\n## Source: {path}\n\n{content.rstrip()}\n"
+        rendered = (
+            f"\n\n## Source: {path} (applies to {applies_to(path)})\n\n{content.rstrip()}\n"
+        )
         if used + len(rendered) <= max_chars - OMITTED_NOTE_RESERVE:
-            chosen.append(rendered)
+            chosen.append((index, rendered))
             used += len(rendered)
         else:
-            omitted = [item[0] for item in sections[: index + 1]]
-            break
-    chosen.reverse()
+            omitted.append(path)
+    chosen.sort()
+    omitted.reverse()
     if omitted:
         omitted_text = ", ".join(str(path) for path in omitted)
         if len(omitted_text) > 900:
             omitted_text = omitted_text[:897] + "..."
         preamble += f"\nOmitted over context cap: {omitted_text}\n"
-    return preamble + "".join(chosen) + scoped
+    result = preamble + "".join(text for _, text in chosen) + scoped
+    # Hard cap: only reachable when max_chars is smaller than the preamble itself.
+    return result[:max_chars]
 
 
 def render_memory_index(scan_result: Scan, budget: int) -> str:
@@ -511,8 +568,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    config = load_config(args.config)
     if args.dry_run:
+        try:
+            config = load_config(args.config)
+        except ConfigError as exc:
+            print(f"{PROG}: invalid config: {exc}", file=sys.stderr)
+            return 2
         if args.trusted_root:
             config = replace(config, trusted_roots=tuple(args.trusted_root))
         result = scan(args.cwd or Path.cwd(), config)
@@ -522,17 +583,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(diagnostic(result), indent=2))
         return 0
 
-    # A hook must never block session start: every failure exits 0 silently.
+    # A hook must never block session start: every failure exits 0 with a
+    # message on stderr and no injected context.
     try:
-        hook_input = json.load(sys.stdin)
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"{PROG}: invalid hook input: {exc}", file=sys.stderr)
+        context = hook_context(sys.stdin, args.config)
+    except ConfigError as exc:
+        print(f"{PROG}: invalid config, injecting nothing: {exc}", file=sys.stderr)
         return 0
-    cwd_value = hook_input.get("cwd") if isinstance(hook_input, dict) else None
-    if not isinstance(cwd_value, str):
-        print(f"{PROG}: hook input has no string cwd", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - the hook must not fail session start
+        print(f"{PROG}: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 0
-    context = render_context(scan(Path(cwd_value), config), config.max_context_chars)
     if context:
         print(
             json.dumps(
@@ -545,6 +605,21 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     return 0
+
+
+def hook_context(stdin, config_path: Path | None) -> str:
+    """Hook mode: the context to inject for the hook JSON on stdin, or ''."""
+    try:
+        hook_input = json.load(stdin)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"{PROG}: invalid hook input: {exc}", file=sys.stderr)
+        return ""
+    cwd_value = hook_input.get("cwd") if isinstance(hook_input, dict) else None
+    if not isinstance(cwd_value, str):
+        print(f"{PROG}: hook input has no string cwd", file=sys.stderr)
+        return ""
+    config = load_config(config_path)
+    return render_context(scan(Path(cwd_value), config), config.max_context_chars)
 
 
 if __name__ == "__main__":

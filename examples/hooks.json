@@ -8,6 +8,7 @@
             "type": "command",
             "command": "/path/to/codex-context-bridge",
             "timeout": 5,
+            "additionalContextLimit": 5000,
             "statusMessage": "Loading Claude context"
           }
         ]
