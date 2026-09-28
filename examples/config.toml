@@ -1,0 +1,19 @@
+# ~/.config/codex-context-bridge/config.toml
+# Only trusted_roots is required. Everything else shows its default.
+
+# Directories whose Claude context may be injected. Nothing is injected outside them.
+trusted_roots = ["~/Projects", "~/Code"]
+
+# Claude Code config dir (auto-memory lives in <dir>/projects). Default: $CLAUDE_CONFIG_DIR or ~/.claude
+# claude_config_dir = "~/.claude"
+
+# Default: read from $CODEX_HOME/config.toml (project_doc_fallback_filenames, project_root_markers).
+# Set only if the bridge should assume something different from what Codex is configured with.
+# codex_fallback_filenames = ["CLAUDE.md"]
+# codex_root_markers = [".git"]
+
+# include_local = true       # CLAUDE.local.md at every level
+# include_dot_claude = true  # <project>/.claude/CLAUDE.md
+# include_rules = true       # <project>/.claude/rules/**/*.md
+# include_memory = true      # Claude auto-memory index (MEMORY.md)
+# max_context_chars = 18000  # stays under Codex's ~5,000-token hook context limit

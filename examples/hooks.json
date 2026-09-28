@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/codex-context-bridge",
+            "timeout": 5,
+            "statusMessage": "Loading Claude context"
+          }
+        ]
+      }
+    ]
+  }
+}

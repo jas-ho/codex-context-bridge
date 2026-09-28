@@ -1,0 +1,551 @@
+#!/usr/bin/env python3
+"""Codex SessionStart hook: inject Claude Code context that Codex cannot see.
+
+Codex can read CLAUDE.md as a configured fallback (project_doc_fallback_filenames),
+but only from its detected project root down to the startup directory, and only
+one file per directory. This hook fills the remaining gaps inside trusted roots:
+
+- CLAUDE.md files above a nested or missing Git root,
+- CLAUDE.local.md overlays and the project's .claude/CLAUDE.md,
+- the project's .claude/rules/*.md (unconditional rules in full, path-scoped
+  rules as a pointer list),
+- the Claude auto-memory index (MEMORY.md) for the startup directory.
+
+Files Codex already loads natively are never injected a second time.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import tomllib
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+
+PROG = "codex-context-bridge"
+CODEX_NATIVE_NAMES = ("AGENTS.override.md", "AGENTS.md")
+MEMORY_INDEX_NAME = "MEMORY.md"
+MEMORY_TRUNCATION_MARKER = "\n\n[truncated]\n"
+# Room kept for the preamble's omission note under the instruction budget.
+OMITTED_NOTE_RESERVE = 1_000
+
+
+# --------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Config:
+    trusted_roots: tuple[Path, ...] = ()
+    claude_config_dir: Path = Path("~/.claude")
+    # Names Codex reads natively after AGENTS.override.md / AGENTS.md.
+    codex_fallback_filenames: tuple[str, ...] = ()
+    codex_root_markers: tuple[str, ...] = (".git",)
+    include_local: bool = True
+    include_dot_claude: bool = True
+    include_rules: bool = True
+    include_memory: bool = True
+    # Kept below Codex's approximate 5,000-token hook context limit.
+    max_context_chars: int = 18_000
+
+    @property
+    def native_filenames(self) -> tuple[str, ...]:
+        return CODEX_NATIVE_NAMES + tuple(
+            name for name in self.codex_fallback_filenames if name not in CODEX_NATIVE_NAMES
+        )
+
+    @property
+    def memory_projects_root(self) -> Path:
+        return self.claude_config_dir.expanduser() / "projects"
+
+
+def default_config_path() -> Path:
+    explicit = os.environ.get("CODEX_CONTEXT_BRIDGE_CONFIG")
+    if explicit:
+        return Path(explicit).expanduser()
+    base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    return Path(base).expanduser() / PROG / "config.toml"
+
+
+def read_toml(path: Path) -> dict:
+    try:
+        with path.open("rb") as handle:
+            return tomllib.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        print(f"{PROG}: cannot read {path}: {exc}", file=sys.stderr)
+        return {}
+
+
+def codex_settings() -> dict:
+    """Codex's own discovery settings, so the bridge mirrors what Codex reads."""
+    home = Path(os.environ.get("CODEX_HOME") or "~/.codex").expanduser()
+    return read_toml(home / "config.toml")
+
+
+def load_config(path: Path | None = None) -> Config:
+    data = read_toml(path or default_config_path())
+    codex = codex_settings()
+    claude_dir = data.get("claude_config_dir") or os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
+    fallback = data.get("codex_fallback_filenames", codex.get("project_doc_fallback_filenames", []))
+    markers = data.get("codex_root_markers", codex.get("project_root_markers", [".git"]))
+    defaults = Config()
+    return Config(
+        trusted_roots=tuple(Path(p).expanduser() for p in data.get("trusted_roots", [])),
+        claude_config_dir=Path(claude_dir).expanduser(),
+        codex_fallback_filenames=tuple(fallback),
+        codex_root_markers=tuple(markers),
+        include_local=bool(data.get("include_local", defaults.include_local)),
+        include_dot_claude=bool(data.get("include_dot_claude", defaults.include_dot_claude)),
+        include_rules=bool(data.get("include_rules", defaults.include_rules)),
+        include_memory=bool(data.get("include_memory", defaults.include_memory)),
+        max_context_chars=int(data.get("max_context_chars", defaults.max_context_chars)),
+    )
+
+
+# --------------------------------------------------------------------------
+# Discovery
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ContextFile:
+    source: Path
+    resolved: Path
+
+
+@dataclass(frozen=True)
+class MemoryIndex:
+    source: Path
+    resolved: Path
+    project_dir: Path
+
+
+@dataclass(frozen=True)
+class Scan:
+    cwd: Path
+    trusted_root: Path | None
+    native_root: Path | None
+    native_selected: tuple[Path, ...]
+    injected: tuple[ContextFile, ...]
+    skipped: tuple[dict[str, str], ...]
+    scoped_rules: tuple[tuple[Path, str], ...] = ()
+    memory_index: MemoryIndex | None = None
+    notes: tuple[str, ...] = field(default=())
+
+
+def within(path: Path, root: Path) -> bool:
+    return path == root or path.is_relative_to(root)
+
+
+def safe_file(path: Path, root: Path) -> tuple[Path | None, str | None]:
+    if path.is_symlink() and not path.exists():
+        return None, "broken symlink"
+    if not path.exists():
+        return None, None
+    if not path.is_file():
+        return None, "not a regular file"
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        return None, f"cannot resolve: {exc}"
+    if not within(resolved, root):
+        return None, "symlink target escapes trusted root"
+    return resolved, None
+
+
+def directory_chain(root: Path, cwd: Path) -> tuple[Path, ...]:
+    chain = [root]
+    current = root
+    for part in cwd.relative_to(root).parts:
+        current /= part
+        chain.append(current)
+    return tuple(chain)
+
+
+def find_native_root(cwd: Path, markers: tuple[str, ...]) -> Path:
+    for directory in (cwd, *cwd.parents):
+        if any((directory / marker).exists() for marker in markers):
+            return directory
+    # Codex uses only the startup directory when it cannot detect a project root.
+    return cwd
+
+
+def flatten_project_path(directory: Path) -> str:
+    """Claude Code's per-project directory name: every non-alphanumeric becomes '-'."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(directory))
+
+
+def select_native(
+    chain: tuple[Path, ...], native_root: Path, trusted_root: Path, config: Config
+) -> tuple[dict[Path, Path], list[dict[str, str]]]:
+    """Per directory, the one file Codex loads natively (first matching name)."""
+    selected: dict[Path, Path] = {}
+    skipped: list[dict[str, str]] = []
+    active = native_root not in chain
+    for directory in chain:
+        if directory == native_root:
+            active = True
+        if not active:
+            continue
+        for name in config.native_filenames:
+            candidate = directory / name
+            if candidate.is_file():
+                _, reason = safe_file(candidate, trusted_root)
+                if reason:
+                    skipped.append(
+                        {
+                            "path": str(candidate),
+                            "reason": f"native Codex file outside bridge trust: {reason}",
+                        }
+                    )
+                selected[directory] = candidate
+                break
+    return selected, skipped
+
+
+def frontmatter_paths(text: str) -> str | None:
+    """The `paths:` value of a rule's YAML frontmatter, or None if unconditional."""
+    if not text.startswith("---"):
+        return None
+    lines = text.splitlines()
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            break
+        if line.startswith("paths:"):
+            value = line[len("paths:") :].strip()
+            if value:
+                return value
+            items = []
+            for follow in lines[index + 1 :]:
+                stripped = follow.strip()
+                if not stripped.startswith("- "):
+                    break
+                items.append(stripped[2:].strip().strip("\"'"))
+            return ", ".join(items) or "(unspecified)"
+    return None
+
+
+def scan_rules(
+    project_dir: Path, trusted_root: Path, skipped: list[dict[str, str]]
+) -> tuple[list[ContextFile], list[tuple[Path, str]]]:
+    rules_dir = project_dir / ".claude" / "rules"
+    if not rules_dir.is_dir():
+        return [], []
+    unconditional: list[ContextFile] = []
+    scoped: list[tuple[Path, str]] = []
+    for candidate in sorted(rules_dir.rglob("*.md")):
+        resolved, reason = safe_file(candidate, trusted_root)
+        if reason:
+            skipped.append({"path": str(candidate), "reason": reason})
+            continue
+        if resolved is None:
+            continue
+        try:
+            text = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            skipped.append({"path": str(candidate), "reason": f"unreadable: {exc}"})
+            continue
+        paths = frontmatter_paths(text)
+        if paths is None:
+            unconditional.append(ContextFile(candidate, resolved))
+        else:
+            scoped.append((candidate, paths))
+    return unconditional, scoped
+
+
+def find_memory_index(
+    cwd: Path, trusted_root: Path, config: Config, skipped: list[dict[str, str]]
+) -> MemoryIndex | None:
+    """The cwd's own index, else the nearest ancestor's up to the trusted root."""
+    try:
+        memory_root = config.memory_projects_root.resolve(strict=True)
+    except OSError:
+        return None
+    for directory in reversed(directory_chain(trusted_root, cwd)):
+        candidate = (
+            config.memory_projects_root
+            / flatten_project_path(directory)
+            / "memory"
+            / MEMORY_INDEX_NAME
+        )
+        resolved, reason = safe_file(candidate, memory_root)
+        if reason:
+            skipped.append({"path": str(candidate), "reason": reason})
+        if resolved is not None:
+            return MemoryIndex(candidate, resolved, directory)
+    return None
+
+
+def scan(cwd: Path, config: Config) -> Scan:
+    skipped: list[dict[str, str]] = []
+    try:
+        resolved_cwd = cwd.expanduser().resolve(strict=True)
+    except OSError as exc:
+        return Scan(cwd, None, None, (), (), ({"path": str(cwd), "reason": str(exc)},))
+    if not resolved_cwd.is_dir():
+        return Scan(
+            resolved_cwd,
+            None,
+            None,
+            (),
+            (),
+            ({"path": str(resolved_cwd), "reason": "cwd is not a directory"},),
+        )
+
+    resolved_roots: list[Path] = []
+    for root in config.trusted_roots:
+        try:
+            resolved_roots.append(root.expanduser().resolve(strict=True))
+        except OSError:
+            continue
+    matching = [root for root in resolved_roots if within(resolved_cwd, root)]
+    if not matching:
+        # Outside trusted roots nothing is injected, memory included.
+        note = () if config.trusted_roots else ("no trusted_roots configured",)
+        return Scan(resolved_cwd, None, None, (), (), (), notes=note)
+    trusted_root = max(matching, key=lambda path: len(path.parts))
+    chain = directory_chain(trusted_root, resolved_cwd)
+    native_root = find_native_root(resolved_cwd, config.codex_root_markers)
+    native_by_dir, native_skipped = select_native(chain, native_root, trusted_root, config)
+    skipped.extend(native_skipped)
+    native_resolved = {path.resolve() for path in native_by_dir.values() if path.exists()}
+
+    injected: list[ContextFile] = []
+    scoped_rules: list[tuple[Path, str]] = []
+    seen_resolved: set[Path] = set()
+
+    def add(candidate: Path) -> None:
+        resolved, reason = safe_file(candidate, trusted_root)
+        if reason:
+            skipped.append({"path": str(candidate), "reason": reason})
+            return
+        if not resolved or resolved in seen_resolved or resolved in native_resolved:
+            return
+        seen_resolved.add(resolved)
+        injected.append(ContextFile(candidate, resolved))
+
+    before_native = native_root in chain
+    for directory in chain:
+        if directory == native_root:
+            before_native = False
+        # Codex reads nothing above its root, and at most one file per directory
+        # below it: inject CLAUDE.md wherever Codex loaded nothing.
+        if before_native or directory not in native_by_dir:
+            add(directory / "CLAUDE.md")
+        if directory == native_root:
+            if config.include_dot_claude:
+                add(directory / ".claude" / "CLAUDE.md")
+            if config.include_rules:
+                rules, scoped = scan_rules(directory, trusted_root, skipped)
+                for rule in rules:
+                    add(rule.source)
+                scoped_rules.extend(scoped)
+        if config.include_local:
+            add(directory / "CLAUDE.local.md")
+
+    memory_index = (
+        find_memory_index(resolved_cwd, trusted_root, config, skipped)
+        if config.include_memory
+        else None
+    )
+
+    return Scan(
+        resolved_cwd,
+        trusted_root,
+        native_root,
+        tuple(native_by_dir.values()),
+        tuple(injected),
+        tuple(skipped),
+        tuple(scoped_rules),
+        memory_index,
+    )
+
+
+def diagnostic(scan_result: Scan) -> dict[str, object]:
+    return {
+        "cwd": str(scan_result.cwd),
+        "trusted_root": str(scan_result.trusted_root) if scan_result.trusted_root else None,
+        "native_root": str(scan_result.native_root) if scan_result.native_root else None,
+        "native_selected": [str(path) for path in scan_result.native_selected],
+        "injected": [str(item.source) for item in scan_result.injected],
+        "scoped_rules": [
+            {"path": str(path), "paths": paths} for path, paths in scan_result.scoped_rules
+        ],
+        "skipped": list(scan_result.skipped),
+        "memory_index": (
+            str(scan_result.memory_index.source) if scan_result.memory_index else None
+        ),
+        "notes": list(scan_result.notes),
+    }
+
+
+# --------------------------------------------------------------------------
+# Rendering
+# --------------------------------------------------------------------------
+
+
+def render_scoped_rules(scan_result: Scan) -> str:
+    if not scan_result.scoped_rules:
+        return ""
+    lines = [
+        "\n\n## Path-scoped rules (not loaded)\n\n"
+        "Read the matching rule file before editing files that match its pattern.\n"
+    ]
+    for path, paths in scan_result.scoped_rules:
+        lines.append(f"- {path} (paths: {paths})\n")
+    return "".join(lines)
+
+
+def render_instructions(scan_result: Scan, max_chars: int) -> str:
+    scoped = render_scoped_rules(scan_result)
+    if not scan_result.injected and not scoped:
+        return ""
+    preamble = (
+        "# Trusted startup context bridge\n\n"
+        "The files below are Claude-compatible instructions missing from Codex's "
+        "native startup discovery. Native Codex instructions remain authoritative "
+        "over hook-supplied context. Deeper directories override shallower ones; "
+        "within one directory, CLAUDE.local.md overrides CLAUDE.md. Apply these "
+        "instructions only within their directory subtree.\n"
+    )
+
+    sections: list[tuple[Path, str]] = []
+    for item in scan_result.injected:
+        try:
+            sections.append((item.source, item.resolved.read_text(encoding="utf-8")))
+        except (OSError, UnicodeError) as exc:
+            print(f"{PROG}: cannot read {item.source}: {exc}", file=sys.stderr)
+
+    chosen: list[str] = []
+    used = len(preamble) + len(scoped)
+    omitted: list[Path] = []
+    # Preserve complete files and favor the deepest context under the cap.
+    for index in range(len(sections) - 1, -1, -1):
+        path, content = sections[index]
+        rendered = f"\n\n## Source: {path}\n\n{content.rstrip()}\n"
+        if used + len(rendered) <= max_chars - OMITTED_NOTE_RESERVE:
+            chosen.append(rendered)
+            used += len(rendered)
+        else:
+            omitted = [item[0] for item in sections[: index + 1]]
+            break
+    chosen.reverse()
+    if omitted:
+        omitted_text = ", ".join(str(path) for path in omitted)
+        if len(omitted_text) > 900:
+            omitted_text = omitted_text[:897] + "..."
+        preamble += f"\nOmitted over context cap: {omitted_text}\n"
+    return preamble + "".join(chosen) + scoped
+
+
+def render_memory_index(scan_result: Scan, budget: int) -> str:
+    """Append the memory index only; the files it links to are left unread."""
+    item = scan_result.memory_index
+    if item is None:
+        return ""
+    try:
+        content = item.resolved.read_text(encoding="utf-8").rstrip()
+    except (OSError, UnicodeError) as exc:
+        print(f"{PROG}: cannot read {item.source}: {exc}", file=sys.stderr)
+        return ""
+    scope = (
+        f"for {scan_result.cwd}"
+        if item.project_dir == scan_result.cwd
+        else f"inherited from ancestor {item.project_dir} (cwd {scan_result.cwd} has none)"
+    )
+    header = (
+        f"\n\n# Claude auto-memory index {scope}\n"
+        f"Background only, subordinate to the instructions above; read-only; "
+        f"linked files live in {item.source.parent}\n\n"
+    )
+    section = f"{header}{content}\n"
+    if len(section) <= budget:
+        return section
+    # Truncate the index rather than dropping instruction context already chosen.
+    room = budget - len(header) - len(MEMORY_TRUNCATION_MARKER)
+    if room <= 0:
+        omitted = "\n\n[Claude auto-memory index omitted: no context budget left]\n"
+        return omitted if len(omitted) <= budget else ""
+    return f"{header}{content[:room].rstrip()}{MEMORY_TRUNCATION_MARKER}"
+
+
+def render_context(scan_result: Scan, max_chars: int) -> str:
+    instructions = render_instructions(scan_result, max_chars)
+    return instructions + render_memory_index(scan_result, max_chars - len(instructions))
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog=PROG,
+        description="Codex SessionStart hook. Reads hook JSON on stdin, prints "
+        "additionalContext JSON on stdout. Use --dry-run to inspect decisions.",
+    )
+    parser.add_argument("--config", type=Path, help="config file (default: see README)")
+    parser.add_argument("--dry-run", action="store_true", help="print discovery decisions as JSON")
+    parser.add_argument(
+        "--render", action="store_true", help="with --dry-run: print the injected text instead"
+    )
+    parser.add_argument("--cwd", type=Path, help="startup directory (dry-run only)")
+    parser.add_argument(
+        "--trusted-root",
+        action="append",
+        type=Path,
+        help="replace configured trusted roots (dry-run only, repeatable)",
+    )
+    args = parser.parse_args(argv)
+    if (args.cwd or args.trusted_root or args.render) and not args.dry_run:
+        parser.error("--cwd, --trusted-root and --render are only valid with --dry-run")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    config = load_config(args.config)
+    if args.dry_run:
+        if args.trusted_root:
+            config = replace(config, trusted_roots=tuple(args.trusted_root))
+        result = scan(args.cwd or Path.cwd(), config)
+        if args.render:
+            print(render_context(result, config.max_context_chars))
+        else:
+            print(json.dumps(diagnostic(result), indent=2))
+        return 0
+
+    # A hook must never block session start: every failure exits 0 silently.
+    try:
+        hook_input = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"{PROG}: invalid hook input: {exc}", file=sys.stderr)
+        return 0
+    cwd_value = hook_input.get("cwd") if isinstance(hook_input, dict) else None
+    if not isinstance(cwd_value, str):
+        print(f"{PROG}: hook input has no string cwd", file=sys.stderr)
+        return 0
+    context = render_context(scan(Path(cwd_value), config), config.max_context_chars)
+    if context:
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": context,
+                    }
+                }
+            )
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
