@@ -2,6 +2,10 @@
 
 A Codex `SessionStart` hook that gives Codex the Claude Code context it cannot discover on its own, at session start, without generating or syncing any files.
 
+![Diagram: an example tree ~/work/acme-api. Codex reads the repo's CLAUDE.md natively; the hook injects ~/work/CLAUDE.md above the Git root, CLAUDE.local.md, .claude/CLAUDE.md, .claude/rules/style.md and Claude's MEMORY.md into the Codex session, and lists the path-scoped rule db.md by path only.](docs/img/overview.svg)
+
+*Green: files Codex would miss, injected by the hook at session start. Nothing is written to disk.*
+
 If you run Claude Code and Codex side by side in the same trees, you probably already set `project_doc_fallback_filenames = ["CLAUDE.md"]` in Codex. That covers the easy part. This hook covers the rest.
 
 ## What Codex misses, and what the hook adds

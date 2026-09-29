@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 508" width="960" height="508" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title>codex-context-bridge overview</title>
+<rect width="960" height="508" rx="12" fill="#ffffff"/>
+<defs><marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/></marker><marker id="ay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker></defs>
+<rect x="16" y="16" width="560" height="476" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="36" y="48" font-size="15" font-weight="600" fill="#24292f">Example tree, Codex started in ~/work/acme-api</text>
+<text x="36" y="98.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#57606a">~/work/</text>
+<text x="36" y="128.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">├── </text>
+<rect x="63.599999999999994" y="111" width="87.60000000000001" height="24" rx="5" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="69.6" y="128.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#0f3d1f">CLAUDE.md</text>
+<text x="165.2" y="128.0" font-size="12.5" fill="#57606a">workspace level, above the Git root</text>
+<text x="36" y="158.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">└── </text>
+<text x="69.6" y="158.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#57606a">acme-api/</text>
+<text x="165.2" y="158.0" font-size="12.5" fill="#57606a">.git: Codex project root</text>
+<text x="36" y="188.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">    ├── </text>
+<rect x="97.2" y="171" width="87.60000000000001" height="24" rx="5" fill="#eaeef2" stroke="#8c959f" stroke-width="1.5"/>
+<text x="103.2" y="188.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#24292f">CLAUDE.md</text>
+<text x="198.8" y="188.0" font-size="12.5" fill="#57606a">via project_doc_fallback_filenames</text>
+<text x="36" y="218.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">    ├── </text>
+<rect x="97.2" y="201" width="138.0" height="24" rx="5" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="103.2" y="218.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#0f3d1f">CLAUDE.local.md</text>
+<text x="249.2" y="218.0" font-size="12.5" fill="#57606a">personal, git-ignored</text>
+<text x="36" y="248.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">    └── </text>
+<text x="103.2" y="248.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#57606a">.claude/</text>
+<text x="36" y="278.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">        ├── </text>
+<rect x="130.8" y="261" width="87.60000000000001" height="24" rx="5" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="136.8" y="278.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#0f3d1f">CLAUDE.md</text>
+<text x="36" y="308.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">        └── </text>
+<text x="136.8" y="308.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#57606a">rules/</text>
+<text x="36" y="338.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">            ├── </text>
+<rect x="164.4" y="321" width="79.2" height="24" rx="5" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="170.4" y="338.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#0f3d1f">style.md</text>
+<text x="257.6" y="338.0" font-size="12.5" fill="#57606a">always-on rule</text>
+<text x="36" y="368.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">            └── </text>
+<rect x="164.4" y="351" width="54.0" height="24" rx="5" fill="#fff8c5" stroke="#bf8700" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="170.4" y="368.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#4d3800">db.md</text>
+<text x="232.4" y="368.0" font-size="12.5" fill="#57606a">paths: src/db/**</text>
+<text x="36" y="398.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#57606a">~/.claude/projects/-home-you-work-acme-api/memory/</text>
+<text x="36" y="428.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#8c959f" xml:space="preserve">└── </text>
+<rect x="63.599999999999994" y="411" width="87.60000000000001" height="24" rx="5" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="69.6" y="428.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#0f3d1f">MEMORY.md</text>
+<text x="165.2" y="428.0" font-size="12.5" fill="#57606a">Claude's auto-memory index</text>
+<rect x="620" y="256.0" width="150" height="74" rx="10" fill="#1a7f37"/>
+<text x="695.0" y="286.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#ffffff">codex-context-</text>
+<text x="695.0" y="304.0" text-anchor="middle" font-size="14.5" font-weight="700" fill="#ffffff">bridge</text>
+<text x="695.0" y="321.0" text-anchor="middle" font-size="11.5" fill="#dafbe1">SessionStart hook</text>
+<rect x="814" y="256.0" width="130" height="74" rx="10" fill="#24292f"/>
+<text x="879.0" y="298.0" text-anchor="middle" font-size="16" font-weight="700" fill="#ffffff">Codex session</text>
+<path d="M570,123.0 C606,123.0 580,293.0 618,293.0" fill="none" stroke="#1a7f37" stroke-width="1.8" opacity="0.85"/>
+<circle cx="570" cy="123.0" r="3" fill="#1a7f37"/>
+<path d="M570,213.0 C606,213.0 580,293.0 618,293.0" fill="none" stroke="#1a7f37" stroke-width="1.8" opacity="0.85"/>
+<circle cx="570" cy="213.0" r="3" fill="#1a7f37"/>
+<path d="M570,273.0 C606,273.0 580,293.0 618,293.0" fill="none" stroke="#1a7f37" stroke-width="1.8" opacity="0.85"/>
+<circle cx="570" cy="273.0" r="3" fill="#1a7f37"/>
+<path d="M570,333.0 C606,333.0 580,293.0 618,293.0" fill="none" stroke="#1a7f37" stroke-width="1.8" opacity="0.85"/>
+<circle cx="570" cy="333.0" r="3" fill="#1a7f37"/>
+<path d="M570,423.0 C606,423.0 580,293.0 618,293.0" fill="none" stroke="#1a7f37" stroke-width="1.8" opacity="0.85"/>
+<circle cx="570" cy="423.0" r="3" fill="#1a7f37"/>
+<path d="M570,363.0 C606,363.0 580,293.0 618,293.0" fill="none" stroke="#bf8700" stroke-width="1.8" opacity="0.85" stroke-dasharray="5 4"/>
+<circle cx="570" cy="363.0" r="3" fill="#bf8700"/>
+<line x1="770" y1="293.0" x2="811" y2="293.0" stroke="#1a7f37" stroke-width="3" marker-end="url(#ag)"/>
+<text x="792.0" y="279.0" text-anchor="middle" font-size="12" fill="#1a7f37" font-weight="600">injects</text>
+<path d="M570,183.0 L867.0,183.0 Q879.0,183.0 879.0,195.0 L879.0,253.0" fill="none" stroke="#8c959f" stroke-width="2" marker-end="url(#ay)"/>
+<circle cx="570" cy="183.0" r="3" fill="#8c959f"/>
+<text x="747.5" y="175.0" text-anchor="middle" font-size="12" fill="#57606a">Codex reads natively</text>
+<rect x="36" y="462" width="22" height="16" rx="4" fill="#eaeef2" stroke="#8c959f" stroke-width="1.5"/>
+<text x="66" y="475" font-size="12.5" fill="#24292f">Codex reads it natively</text>
+<rect x="255" y="462" width="22" height="16" rx="4" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+<text x="285" y="475" font-size="12.5" fill="#24292f">hook injects the content</text>
+<rect x="481" y="462" width="22" height="16" rx="4" fill="#fff8c5" stroke="#bf8700" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="511" y="475" font-size="12.5" fill="#24292f">hook lists path + pattern only</text>
+</svg>
